@@ -1,0 +1,11 @@
+[package]
+edition = "2018"
+name = "wordless"
+version = "0.1.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+futures = "0.3.19"
+tokio = {version = "1.15.0", features = ["macros", "rt", "rt-multi-thread", "io-util", "io-std", "fs"]}
+tokio-stream = {version = "0.1.8", features = ["io-util"]}
