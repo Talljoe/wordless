@@ -16,6 +16,37 @@ impl WordList {
     pub fn get(&self) -> Vec<&'static str> {
         self.word_list.clone()
     }
+
+    // pub fn remove_letter(&self, letter: char) -> WordList {
+    //     WordList {
+    //         word_list: self
+    //             .word_list
+    //             .iter()
+    //             .filter(|w| !w.contains(letter))
+    //             .map(|w| *w)
+    //             .collect(),
+    //     }
+    // }
+
+    // pub fn ensure_letter(&self, letter: char) -> WordList {
+    //     WordList {
+    //         word_list: self
+    //             .word_list
+    //             .iter()
+    //             .filter(|w| w.contains(letter))
+    //             .map(|w| *w)
+    //             .collect(),
+    //     }
+    // }
+
+    pub fn whittle(&self, letter: char) -> WordList {
+        let lists: (Vec<&str>, Vec<&str>) = self.word_list.iter().partition(|w| w.contains(letter));
+        if lists.0.len() > lists.1.len() {
+            WordList { word_list: lists.0 }
+        } else {
+            WordList { word_list: lists.1 }
+        }
+    }
 }
 
 fn make_word_list() -> Vec<&'static str> {
