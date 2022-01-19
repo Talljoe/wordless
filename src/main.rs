@@ -1,11 +1,17 @@
+mod game;
 mod word_list;
 
 use std::{
     collections::{hash_map::RandomState, HashMap, HashSet},
+    io::Write,
     iter::FromIterator,
 };
 
+use game::CheckData;
+use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 use word_list::WordList;
+
+use crate::game::Game;
 
 #[derive(Clone, Debug)]
 struct DictionarySet {
@@ -64,7 +70,7 @@ fn calculate_score(dictionary: &DictionarySet, word: &'static str) -> usize {
 }
 
 #[tokio::main(flavor = "multi_thread")]
-async fn main() {
+async fn main() -> Result<(), std::io::Error> {
     let word_list = WordList::new();
     let set = build_dictionaries(&word_list).await;
     // let histo: Vec<_> = set
@@ -87,24 +93,24 @@ async fn main() {
     println!("{}", word_list.word_count());
     println!("{:?}", histo);
 
-    let words = word_list.get();
-    let ideal = word_list.word_count() >> 5;
-    println!("Ideal: {}", ideal);
-    let mut reduction = words
-        .iter()
-        .map(|word| {
-            (
-                word,
-                word.chars()
-                    .fold(WordList::new(), |list, c| list.whittle(c))
-                    .word_count(),
-                calculate_score(&set, word),
-            )
-        })
-        .collect::<Vec<_>>();
-    reduction.sort_by_key(|x| (x.1, (1 << 32) - x.2, x.0));
-    reduction.truncate(50);
-    println!("{:?}", reduction);
+    // let words = word_list.get();
+    // let ideal = word_list.word_count() >> 5;
+    // println!("Ideal: {}", ideal);
+    // let mut reduction = words
+    //     .iter()
+    //     .map(|word| {
+    //         (
+    //             word,
+    //             word.chars()
+    //                 .fold(WordList::new(), |list, c| list.whittle(c))
+    //                 .word_count(),
+    //             calculate_score(&set, word),
+    //         )
+    //     })
+    //     .collect::<Vec<_>>();
+    // reduction.sort_by_key(|x| (x.1, (1 << 32) - x.2, x.0));
+    // reduction.truncate(50);
+    // println!("{:?}", reduction);
 
     // let words = word_list.get();
     // let mut scores = words
@@ -115,4 +121,43 @@ async fn main() {
     // scores.reverse();
     // scores.truncate(20);
     // println!("{:?}", scores);
+
+    let mut game = Game::new("tests".to_string());
+    print_results(&game.check("sssss"))?;
+    print_results(&game.check("totes"))?;
+    print_results(&game.check("tests"))?;
+    Ok(())
+}
+
+fn print_results(result: &CheckData) -> Result<(), std::io::Error> {
+    let mut stdout = StandardStream::stdout(termcolor::ColorChoice::Auto);
+    for letter in result.letters.iter() {
+        match letter {
+            game::LetterResult::Exact(c) => {
+                stdout.set_color(
+                    ColorSpec::new()
+                        .set_intense(true)
+                        .set_fg(Some(Color::Green)),
+                )?;
+                write!(&mut stdout, "{}", c.to_ascii_uppercase())?;
+                stdout.reset()?;
+            }
+            game::LetterResult::Contains(c) => {
+                stdout.set_color(
+                    ColorSpec::new()
+                        .set_intense(true)
+                        .set_fg(Some(Color::Yellow)),
+                )?;
+                write!(&mut stdout, "{}", c.to_ascii_uppercase())?;
+                stdout.reset()?;
+            }
+            game::LetterResult::NotFound(c) => {
+                stdout.set_color(ColorSpec::new().set_fg(Some(Color::White)))?;
+                write!(&mut stdout, "{}", c.to_ascii_uppercase())?;
+                stdout.reset()?;
+            }
+        }
+    }
+    writeln!(&mut stdout, ": {}/6", result.guesses)?;
+    Ok(())
 }
