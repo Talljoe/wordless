@@ -2,7 +2,7 @@ use std::{convert::TryInto, iter::FromIterator};
 
 #[derive(Clone, Debug)]
 pub struct Game {
-    guesses: Vec<Vec<LetterResult>>,
+    guesses: Vec<CheckData>,
     word: String,
 }
 
@@ -35,6 +35,10 @@ impl Game {
     }
 
     pub fn check(&mut self, guess: &str) -> CheckData {
+        if self.guesses.len() == 6 {
+            return self.guesses.last().unwrap().clone();
+        }
+
         let mut word_chars = Vec::from_iter(self.word.chars());
         let mut letters: Vec<LetterResult> = vec![];
 
@@ -57,28 +61,6 @@ impl Game {
             }
         }
 
-        // let letters: Vec<LetterResult> = guess
-        //     .chars()
-        //     .enumerate()
-        //     .map(|(i, c)| match word_chars.get_mut(i) {
-        //         Some(fc) if *fc == c => {
-        //             *fc = '_';
-        //             (i, c, Some(LetterResult::Exact(c)))
-        //         }
-        //         _ => (i, c, None),
-        //     })
-        //     .map(|(i, c, prev)| {
-        //         prev.unwrap_or_else(|| {
-        //             if let Ok(found_at) = word_chars.binary_search(&c) {
-        //                 word_chars.remove(found_at);
-        //                 LetterResult::Contains(c)
-        //             } else {
-        //                 LetterResult::NotFound(c)
-        //             }
-        //         })
-        //     })
-        //     .collect();
-        self.guesses.push(letters.clone());
         let result = if letters
             .iter()
             .all(|lr| matches!(lr, LetterResult::Exact(_)))
@@ -88,10 +70,13 @@ impl Game {
             GuessResult::Incorrect
         };
 
-        CheckData {
+        let guesses = self.guesses.len() + 1;
+        let verdict = CheckData {
             letters,
             result,
-            guesses: self.guesses.len().try_into().unwrap(),
-        }
+            guesses: guesses.try_into().unwrap(),
+        };
+        self.guesses.push(verdict.clone());
+        verdict
     }
 }
