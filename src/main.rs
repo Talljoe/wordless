@@ -11,6 +11,7 @@ use std::{
 use clap::{ArgGroup, Parser};
 use devtimer::DevTime;
 use game::{CheckData, LetterResult};
+use hash_histogram::HashHistogram;
 use prettytable::{cell, row, Table};
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 use word_list::WordList;
@@ -134,7 +135,7 @@ async fn main() -> Result<(), std::io::Error> {
             GuessResult::Incorrect => {
                 let result = game.check(&guess);
                 print_single_guess(&result).unwrap();
-                (result.result, process_results(word_list, result.letters))
+                (result.result, eliminate_words(word_list, result.letters))
             }
         },
     );
@@ -145,10 +146,21 @@ async fn main() -> Result<(), std::io::Error> {
         GuessResult::Win => print_results(&game, config.suggest.is_some())?,
         GuessResult::Incorrect => {
             if config.suggest.is_some() {
+                let mut timer = devtimer::SimpleTimer::new();
+                timer.start();
+                print_suggestion(
+                    config.suggest.flatten().unwrap_or(DEFAULT_SUGGESTION_COUNT),
+                    &suggest2(build_dictionaries(&word_list), word_list.clone())?,
+                )?;
+                timer.stop();
+                println!("{:?}", timer.time_in_millis());
+                timer.start();
                 print_suggestion(
                     config.suggest.flatten().unwrap_or(DEFAULT_SUGGESTION_COUNT),
                     &suggest(build_dictionaries(&word_list), word_list)?,
                 )?;
+                timer.stop();
+                println!("{:?}", timer.time_in_millis());
             }
         }
         GuessResult::Lose => print_results(&game, config.suggest.is_some())?,
@@ -162,9 +174,6 @@ fn suggest(
     set: DictionarySet,
     word_list: WordList,
 ) -> Result<Vec<(&'static str, usize, usize)>, std::io::Error> {
-    let mut histo: Vec<_> = set.contains_map.iter().map(|(c, m)| (c, m.len())).collect();
-    histo.sort_by_key(|item| item.1);
-    histo.reverse();
     println!("Words remaining: {}", word_list.word_count());
     let mut word_cache: HashMap<Vec<char>, usize> = Default::default();
     let words = word_list.get();
@@ -182,6 +191,45 @@ fn suggest(
                         .iter()
                         .fold(word_list.clone(), |list, c| list.whittle(*c))
                         .word_count();
+                    word_cache.insert(sorted_chars, remaining);
+                    remaining
+                }
+            };
+            (*word, remaining_words, calculate_score(&set, word))
+        })
+        .collect::<Vec<_>>();
+    reduction.sort_by_key(|x| (x.1, (1 << 32) - x.2, x.0));
+    reduction.truncate(25);
+    Ok(reduction)
+}
+
+fn suggest2(
+    set: DictionarySet,
+    word_list: WordList,
+) -> Result<Vec<(&'static str, usize, usize)>, std::io::Error> {
+    println!("Words remaining: {}", word_list.word_count());
+    let mut word_cache: HashMap<Vec<char>, usize> = Default::default();
+    let words = word_list.get();
+
+    let mut reduction = words
+        .iter()
+        .map(|word| {
+            let mut sorted_chars = Vec::from_iter(word.chars());
+            sorted_chars.dedup();
+            sorted_chars.sort();
+
+            let remaining_words = match word_cache.get(&sorted_chars) {
+                Some(remaining) => *remaining,
+                None => {
+                    let mut hist: HashHistogram<u8> = HashHistogram::new();
+                    for word in words.iter() {
+                        let bucket = sorted_chars.iter().fold(0_u8, |acc, c| {
+                            (acc << 1) + if word.contains(*c) { 1 } else { 0 }
+                        });
+                        hist.bump(&bucket);
+                    }
+
+                    let remaining = hist.iter().map(|(_, count)| *count).max().unwrap_or(0);
                     word_cache.insert(sorted_chars, remaining);
                     remaining
                 }
@@ -226,7 +274,7 @@ fn print_suggestion(
     Ok(())
 }
 
-fn process_results(word_list: WordList, letters: Vec<LetterResult>) -> WordList {
+fn eliminate_words(word_list: WordList, letters: Vec<LetterResult>) -> WordList {
     let set = build_dictionaries(&word_list);
     let found_letters =
         BTreeSet::from_iter(letters.iter().filter(|r| r.is_found()).map(|r| r.to_char()));
