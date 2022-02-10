@@ -8,7 +8,7 @@ use std::{
     iter::FromIterator,
 };
 
-use clap::Parser;
+use clap::{ArgGroup, Parser};
 use devtimer::DevTime;
 use game::{CheckData, LetterResult};
 use prettytable::{cell, row, Table};
@@ -74,30 +74,33 @@ fn calculate_score(dictionary: &DictionarySet, word: &'static str) -> usize {
 
 #[derive(Parser, Debug)]
 #[clap(version)]
+#[clap(group(ArgGroup::new("puzzle").args(&["day", "word"])))]
 struct Args {
     /// Which day's puzzle to try; defaults to today's
     #[clap(long, short)]
     day: Option<usize>,
 
-    /// Use the word for guessing
+    /// Word to use for the puzzle instead of the default
     #[clap(long, short)]
     word: Option<String>,
 
-    /// Suggest words to try based on previous results
-    #[clap(long, short)]
-    suggest: bool,
+    /// Suggest words to try based on previous results; default COUNT is 20
+    #[clap(short, long, value_name = "COUNT")]
+    suggest: Option<Option<usize>>,
 
     /// Straight up cheat. You must supply this flag at least three times
     #[clap(long, parse(from_occurrences))]
     cheat: usize,
 
     ///Use easy mode
-    #[clap(long)]
+    #[clap(short, long)]
     easy: bool,
 
     /// Your guesses
     guesses: Vec<String>,
 }
+
+const DEFAULT_SUGGESTION_COUNT: usize = 20;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), std::io::Error> {
@@ -139,13 +142,16 @@ async fn main() -> Result<(), std::io::Error> {
     println!();
 
     match result {
-        GuessResult::Win => print_results(&game, config.suggest)?,
+        GuessResult::Win => print_results(&game, config.suggest.is_some())?,
         GuessResult::Incorrect => {
-            if config.suggest {
-                print_suggestion(&suggest(build_dictionaries(&word_list), word_list)?)?;
+            if config.suggest.is_some() {
+                print_suggestion(
+                    config.suggest.flatten().unwrap_or(DEFAULT_SUGGESTION_COUNT),
+                    &suggest(build_dictionaries(&word_list), word_list)?,
+                )?;
             }
         }
-        GuessResult::Lose => print_results(&game, config.suggest)?,
+        GuessResult::Lose => print_results(&game, config.suggest.is_some())?,
         GuessResult::Invalid(w) => println!("Guess '{}' does not contain all revealed letters.", w),
     }
 
@@ -203,12 +209,19 @@ fn get_position_vec(set: &DictionarySet, p: usize, c: &char) -> Vec<&'static str
         .collect()
 }
 
-fn print_suggestion(reduction: &Vec<(&str, usize, usize)>) -> Result<(), std::io::Error> {
+fn print_suggestion(
+    count: usize,
+    reduction: &Vec<(&str, usize, usize)>,
+) -> Result<(), std::io::Error> {
     let mut table = Table::new();
     table.add_row(row!["Word", "Remaining", "Pos Score"]);
-    for (word, remaining, score) in reduction {
+    for (word, remaining, score) in reduction.iter().take(count) {
         table.add_row(row![word, remaining, score]);
     }
+    if reduction.len() > count {
+        table.add_row(row!["...", "", ""]);
+    }
+
     table.printstd();
     Ok(())
 }
