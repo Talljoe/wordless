@@ -15,6 +15,10 @@ impl WordList {
         make_contest_list().into()
     }
 
+    pub fn get_word_for_day(day: usize) -> Option<&'static str> {
+        make_contest_list().get(day).map(|x| *x)
+    }
+
     pub fn word_count(&self) -> usize {
         self.word_list.len()
     }
