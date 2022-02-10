@@ -63,9 +63,9 @@ impl Game {
 
     pub fn new(day: Option<usize>) -> Self {
         let day = day.or_else(|| {
-            let wepoch = Local.ymd(2021, 6, 19).and_hms(0, 0, 0);
-            Local::now()
-                .signed_duration_since::<Utc>(wepoch.into())
+            let wepoch = Local.ymd(2021, 6, 19);
+            Local::today()
+                .signed_duration_since::<Local>(wepoch)
                 .num_days()
                 .abs()
                 .try_into()
