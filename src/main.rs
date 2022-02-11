@@ -4,19 +4,21 @@ mod word_list;
 
 use std::{
     collections::{hash_map::RandomState, BTreeSet, HashMap, HashSet},
+    convert::TryInto,
     io::Write,
     iter::FromIterator,
 };
 
+use crate::game::{Game, GuessResult};
 use clap::{ArgGroup, Parser};
 use devtimer::DevTime;
 use game::{CheckData, LetterResult};
 use hash_histogram::HashHistogram;
+use itertools::Itertools;
 use prettytable::{cell, row, Table};
+use rayon::prelude::*;
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 use word_list::WordList;
-
-use crate::game::{Game, GuessResult};
 
 #[derive(Clone, Debug)]
 struct DictionarySet {
@@ -58,17 +60,26 @@ fn build_dictionaries(word_list: &WordList) -> DictionarySet {
     })
 }
 
-fn calculate_score(dictionary: &DictionarySet, word: &'static str) -> usize {
-    const CONTAINS_VALUE: usize = 0;
-    const POSITION_VALUE: usize = 1;
-    let contains_count: usize = HashSet::<char, RandomState>::from_iter(word.chars())
+fn calculate_score(dictionary: &DictionarySet, word: &'static str) -> i64 {
+    const CONTAINS_VALUE: i64 = 0;
+    const POSITION_VALUE: i64 = 1;
+    let contains_count: i64 = HashSet::<char, RandomState>::from_iter(word.chars())
         .iter()
-        .map(|c| dictionary.contains_map.get(&c).map_or(0, HashSet::len))
+        .map(|c| {
+            dictionary
+                .contains_map
+                .get(&c)
+                .map_or(0, |v| v.len().try_into().unwrap())
+        })
         .sum();
-    let position_count: usize = word
+    let position_count: i64 = word
         .chars()
         .enumerate()
-        .map(|(i, c)| dictionary.position_maps[i].get(&c).map_or(0, HashSet::len))
+        .map(|(i, c)| {
+            dictionary.position_maps[i]
+                .get(&c)
+                .map_or(0, |v| v.len().try_into().unwrap())
+        })
         .sum();
     (contains_count * CONTAINS_VALUE) + (position_count * POSITION_VALUE)
 }
@@ -85,9 +96,13 @@ struct Args {
     #[clap(long, short)]
     word: Option<String>,
 
-    /// Suggest words to try based on previous results; default COUNT is 20
-    #[clap(short, long, value_name = "COUNT")]
-    suggest: Option<Option<usize>>,
+    /// Suggest words to try based on previous results
+    #[clap(short, long)]
+    suggest: bool,
+
+    /// Number of words to suggest (used with "--suggest")
+    #[clap(long, value_name = "COUNT", default_value = "20")]
+    suggest_count: usize,
 
     /// Straight up cheat. You must supply this flag at least three times
     #[clap(long, parse(from_occurrences))]
@@ -100,8 +115,6 @@ struct Args {
     /// Your guesses
     guesses: Vec<String>,
 }
-
-const DEFAULT_SUGGESTION_COUNT: usize = 20;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), std::io::Error> {
@@ -143,27 +156,16 @@ async fn main() -> Result<(), std::io::Error> {
     println!();
 
     match result {
-        GuessResult::Win => print_results(&game, config.suggest.is_some())?,
+        GuessResult::Win => print_results(&game, config.suggest)?,
         GuessResult::Incorrect => {
-            if config.suggest.is_some() {
-                let mut timer = devtimer::SimpleTimer::new();
-                timer.start();
+            if config.suggest {
                 print_suggestion(
-                    config.suggest.flatten().unwrap_or(DEFAULT_SUGGESTION_COUNT),
-                    &suggest2(build_dictionaries(&word_list), word_list.clone())?,
-                )?;
-                timer.stop();
-                println!("{:?}", timer.time_in_millis());
-                timer.start();
-                print_suggestion(
-                    config.suggest.flatten().unwrap_or(DEFAULT_SUGGESTION_COUNT),
+                    config.suggest_count,
                     &suggest(build_dictionaries(&word_list), word_list)?,
                 )?;
-                timer.stop();
-                println!("{:?}", timer.time_in_millis());
             }
         }
-        GuessResult::Lose => print_results(&game, config.suggest.is_some())?,
+        GuessResult::Lose => print_results(&game, config.suggest)?,
         GuessResult::Invalid(w) => println!("Guess '{}' does not contain all revealed letters.", w),
     }
 
@@ -173,73 +175,46 @@ async fn main() -> Result<(), std::io::Error> {
 fn suggest(
     set: DictionarySet,
     word_list: WordList,
-) -> Result<Vec<(&'static str, usize, usize)>, std::io::Error> {
+) -> Result<Vec<(&'static str, usize, i64)>, std::io::Error> {
     println!("Words remaining: {}", word_list.word_count());
-    let mut word_cache: HashMap<Vec<char>, usize> = Default::default();
-    let words = word_list.get();
+    let mut words = word_list.get();
+    words.par_sort_by_key(|word| pattern_from_word(*word));
 
-    let mut reduction = words
+    let grouped = words
         .iter()
-        .map(|word| {
-            let mut sorted_chars = Vec::from_iter(word.chars());
-            sorted_chars.sort();
+        .group_by(|word| pattern_from_word(*word))
+        .into_iter()
+        .map(|(key, group)| (key, group.cloned().collect_vec()))
+        .collect_vec();
 
-            let remaining_words = match word_cache.get(&sorted_chars) {
-                Some(remaining) => *remaining,
-                None => {
-                    let remaining = sorted_chars
-                        .iter()
-                        .fold(word_list.clone(), |list, c| list.whittle(*c))
-                        .word_count();
-                    word_cache.insert(sorted_chars, remaining);
-                    remaining
-                }
-            };
-            (*word, remaining_words, calculate_score(&set, word))
+    let mut reduction = grouped
+        .par_iter()
+        .flat_map(|(char_pattern, pattern_words)| {
+            let mut hist: HashHistogram<u8> = HashHistogram::new();
+            for word in words.iter() {
+                let bucket = char_pattern.chars().fold(0_u8, |acc, c| {
+                    (acc << 1) + if word.contains(c) { 1 } else { 0 }
+                });
+                hist.bump(&bucket);
+            }
+
+            let remaining = hist.iter().map(|(_, count)| *count).max().unwrap_or(0);
+            pattern_words
+                .into_iter()
+                .map(move |w| (*w, remaining))
+                .par_bridge()
         })
-        .collect::<Vec<_>>();
-    reduction.sort_by_key(|x| (x.1, (1 << 32) - x.2, x.0));
-    reduction.truncate(25);
+        .map(|(word, count)| (word, count, calculate_score(&set, word)))
+        .collect::<Vec<(&'static str, usize, i64)>>();
+
+    reduction.par_sort_by_key(|(word, count, score)| (*count, -*score, *word));
     Ok(reduction)
 }
 
-fn suggest2(
-    set: DictionarySet,
-    word_list: WordList,
-) -> Result<Vec<(&'static str, usize, usize)>, std::io::Error> {
-    println!("Words remaining: {}", word_list.word_count());
-    let mut word_cache: HashMap<Vec<char>, usize> = Default::default();
-    let words = word_list.get();
-
-    let mut reduction = words
-        .iter()
-        .map(|word| {
-            let mut sorted_chars = Vec::from_iter(word.chars());
-            sorted_chars.dedup();
-            sorted_chars.sort();
-
-            let remaining_words = match word_cache.get(&sorted_chars) {
-                Some(remaining) => *remaining,
-                None => {
-                    let mut hist: HashHistogram<u8> = HashHistogram::new();
-                    for word in words.iter() {
-                        let bucket = sorted_chars.iter().fold(0_u8, |acc, c| {
-                            (acc << 1) + if word.contains(*c) { 1 } else { 0 }
-                        });
-                        hist.bump(&bucket);
-                    }
-
-                    let remaining = hist.iter().map(|(_, count)| *count).max().unwrap_or(0);
-                    word_cache.insert(sorted_chars, remaining);
-                    remaining
-                }
-            };
-            (*word, remaining_words, calculate_score(&set, word))
-        })
-        .collect::<Vec<_>>();
-    reduction.sort_by_key(|x| (x.1, (1 << 32) - x.2, x.0));
-    reduction.truncate(25);
-    Ok(reduction)
+fn pattern_from_word(word: &str) -> String {
+    let mut sorted_chars = Vec::from_iter(word.chars());
+    sorted_chars.sort();
+    sorted_chars.iter().collect()
 }
 
 fn position_match(word_list: WordList, set: &DictionarySet, p: usize, c: &char) -> WordList {
@@ -259,7 +234,7 @@ fn get_position_vec(set: &DictionarySet, p: usize, c: &char) -> Vec<&'static str
 
 fn print_suggestion(
     count: usize,
-    reduction: &Vec<(&str, usize, usize)>,
+    reduction: &Vec<(&str, usize, i64)>,
 ) -> Result<(), std::io::Error> {
     let mut table = Table::new();
     table.add_row(row!["Word", "Remaining", "Pos Score"]);
@@ -338,7 +313,7 @@ fn print_results(game: &Game, assisted: bool) -> Result<(), std::io::Error> {
     let assisted_str = if assisted { " TA" } else { "" };
     let guesses = game.guesses();
     println!(
-        "Wordle {} {}/6{}{}",
+        "Wordle {} {}/6{}{}\n",
         num_str,
         guesses.len(),
         hard_str,

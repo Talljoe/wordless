@@ -10,7 +10,10 @@ chrono = "0.4.19"
 clap = {version = "3.0.14", features = ["derive", "wrap_help", "cargo"]}
 devtimer = "4.0.1"
 futures = "0.3.21"
+hash_histogram = "0.6.2"
+itertools = "0.10.3"
 prettytable-rs = "^0.8"
+rayon = "1.5.1"
 termcolor = "1.1.2"
 tokio = {version = "1.15.0", features = ["macros", "rt", "rt-multi-thread", "io-util", "io-std", "fs"]}
 tokio-stream = {version = "0.1.8", features = ["io-util"]}
