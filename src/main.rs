@@ -3,7 +3,7 @@ mod game;
 mod word_list;
 
 use std::{
-    collections::{hash_map::RandomState, BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     convert::TryInto,
     io::Write,
     iter::FromIterator,
@@ -61,27 +61,12 @@ fn build_dictionaries(word_list: &WordList) -> DictionarySet {
 }
 
 fn calculate_score(dictionary: &DictionarySet, word: &'static str) -> i64 {
-    const CONTAINS_VALUE: i64 = 0;
-    const POSITION_VALUE: i64 = 1;
-    let contains_count: i64 = HashSet::<char, RandomState>::from_iter(word.chars())
-        .iter()
-        .map(|c| {
-            dictionary
-                .contains_map
-                .get(&c)
-                .map_or(0, |v| v.len().try_into().unwrap())
-        })
-        .sum();
-    let position_count: i64 = word
-        .chars()
+    word.chars()
         .enumerate()
-        .map(|(i, c)| {
-            dictionary.position_maps[i]
-                .get(&c)
-                .map_or(0, |v| v.len().try_into().unwrap())
-        })
-        .sum();
-    (contains_count * CONTAINS_VALUE) + (position_count * POSITION_VALUE)
+        .map(|(i, c)| dictionary.position_maps[i].get(&c).map_or(0, |v| v.len()))
+        .sum::<usize>()
+        .try_into()
+        .unwrap()
 }
 
 #[derive(Parser, Debug)]
