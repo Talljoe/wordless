@@ -1,17 +1,13 @@
+mod dictionary_set;
 #[allow(dead_code)]
 mod game;
 mod word_list;
 
-use std::{
-    collections::{BTreeSet, HashMap, HashSet},
-    convert::TryInto,
-    io::Write,
-    iter::FromIterator,
-};
+use std::{collections::BTreeSet, convert::TryInto, io::Write, iter::FromIterator};
 
+use crate::dictionary_set::DictionarySet;
 use crate::game::{Game, GuessResult};
 use clap::{ArgGroup, Parser};
-use devtimer::DevTime;
 use game::{CheckData, LetterResult};
 use hash_histogram::HashHistogram;
 use itertools::Itertools;
@@ -19,55 +15,6 @@ use prettytable::{cell, row, Table};
 use rayon::prelude::*;
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 use word_list::WordList;
-
-#[derive(Clone, Debug)]
-struct DictionarySet {
-    position_maps: [HashMap<char, HashSet<&'static str>>; 5],
-    contains_map: HashMap<char, HashSet<&'static str>>,
-}
-
-impl DictionarySet {
-    pub fn new() -> Self {
-        let mut prototype = HashMap::<char, HashSet<&'static str>>::new();
-        for c in 'a'..='z' {
-            prototype.insert(c, Default::default());
-        }
-
-        DictionarySet {
-            position_maps: [
-                prototype.clone(),
-                prototype.clone(),
-                prototype.clone(),
-                prototype.clone(),
-                prototype.clone(),
-            ],
-            contains_map: prototype.clone(),
-        }
-    }
-}
-
-fn build_dictionaries(word_list: &WordList) -> DictionarySet {
-    let mut timer = DevTime::new_simple();
-    timer.start();
-    let initial = DictionarySet::new();
-    let list = word_list.get();
-    list.iter().fold(initial, |mut set, item| {
-        for (i, c) in item.chars().enumerate() {
-            set.position_maps[i].get_mut(&c).unwrap().insert(item);
-            set.contains_map.get_mut(&c).unwrap().insert(item);
-        }
-        set
-    })
-}
-
-fn calculate_score(dictionary: &DictionarySet, word: &'static str) -> i64 {
-    word.chars()
-        .enumerate()
-        .map(|(i, c)| dictionary.position_maps[i].get(&c).map_or(0, |v| v.len()))
-        .sum::<usize>()
-        .try_into()
-        .unwrap()
-}
 
 #[derive(Parser, Debug)]
 #[clap(version)]
@@ -146,7 +93,7 @@ async fn main() -> Result<(), std::io::Error> {
             if config.suggest {
                 print_suggestion(
                     config.suggest_count,
-                    &suggest(build_dictionaries(&word_list), word_list)?,
+                    &suggest(DictionarySet::from_word_list(&word_list), word_list)?,
                 )?;
             }
         }
@@ -157,6 +104,14 @@ async fn main() -> Result<(), std::io::Error> {
     Ok(())
 }
 
+/// The algorithm here is to find out how well words bisect the problem space. For that we create a 5-bit
+/// value for each word in the list determining with that letter is contained in the guess. For speed we
+/// group words that have the same letters together (i.e. order of the letters is not important) and
+/// rate the candidate words by the smallest max bucket (i.e. worst-case performance). Algorithm is O(o^2).
+///
+/// We also calculate a second value--position score--which indicates how many times a word has an
+/// exact-position match. The higher the score the more likely it is a guess will cut the working set
+/// dramatically.
 fn suggest(
     set: DictionarySet,
     word_list: WordList,
@@ -196,10 +151,43 @@ fn suggest(
     Ok(reduction)
 }
 
+fn calculate_score(dictionary: &DictionarySet, word: &'static str) -> i64 {
+    word.chars()
+        .enumerate()
+        .map(|(i, c)| {
+            dictionary
+                .list_for_position(i)
+                .get(&c)
+                .map_or(0, |v| v.len())
+        })
+        .sum::<usize>()
+        .try_into()
+        .unwrap()
+}
+
 fn pattern_from_word(word: &str) -> String {
     let mut sorted_chars = Vec::from_iter(word.chars());
     sorted_chars.sort();
     sorted_chars.iter().collect()
+}
+
+fn eliminate_words(word_list: WordList, letters: Vec<LetterResult>) -> WordList {
+    let set = DictionarySet::from_word_list(&word_list);
+    let found_letters =
+        BTreeSet::from_iter(letters.iter().filter(|r| r.is_found()).map(|r| r.to_char()));
+
+    letters
+        .iter()
+        .enumerate()
+        .fold(word_list, |word_list, (i, result)| match result {
+            LetterResult::Exact(c) => position_match(word_list, &set, i, c),
+            LetterResult::Contains(c) => position_mismatch(word_list, &set, i, c).ensure_letter(*c),
+            LetterResult::NotFound(c) if !found_letters.contains(c) => {
+                //TODO: This is not entirely correct, doesn't remove duplicates that aren't found
+                word_list.remove_letter(*c)
+            }
+            _ => word_list,
+        })
 }
 
 fn position_match(word_list: WordList, set: &DictionarySet, p: usize, c: &char) -> WordList {
@@ -211,7 +199,7 @@ fn position_mismatch(word_list: WordList, set: &DictionarySet, p: usize, c: &cha
 }
 
 fn get_position_vec(set: &DictionarySet, p: usize, c: &char) -> Vec<&'static str> {
-    Vec::from_iter(set.position_maps[p].get(c).unwrap())
+    Vec::from_iter(set.list_for_position(p).get(c).unwrap())
         .iter()
         .map(|x| **x)
         .collect()
@@ -232,25 +220,6 @@ fn print_suggestion(
 
     table.printstd();
     Ok(())
-}
-
-fn eliminate_words(word_list: WordList, letters: Vec<LetterResult>) -> WordList {
-    let set = build_dictionaries(&word_list);
-    let found_letters =
-        BTreeSet::from_iter(letters.iter().filter(|r| r.is_found()).map(|r| r.to_char()));
-
-    letters
-        .iter()
-        .enumerate()
-        .fold(word_list, |word_list, (i, result)| match result {
-            LetterResult::Exact(c) => position_match(word_list, &set, i, c),
-            LetterResult::Contains(c) => position_mismatch(word_list, &set, i, c).ensure_letter(*c),
-            LetterResult::NotFound(c) if !found_letters.contains(c) => {
-                //TODO: This is not entirely correct, doesn't remove duplicates that aren't found
-                word_list.remove_letter(*c)
-            }
-            _ => word_list,
-        })
 }
 
 fn print_single_guess(result: &CheckData) -> Result<(), std::io::Error> {
