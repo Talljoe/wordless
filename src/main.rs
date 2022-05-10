@@ -93,7 +93,11 @@ async fn main() -> Result<(), std::io::Error> {
             if config.suggest {
                 print_suggestion(
                     config.suggest_count,
-                    &suggest(DictionarySet::from_word_list(&word_list), word_list)?,
+                    &suggest(
+                        DictionarySet::from_word_list(&word_list),
+                        word_list,
+                        config.easy,
+                    )?,
                 )?;
             }
         }
@@ -115,12 +119,24 @@ async fn main() -> Result<(), std::io::Error> {
 fn suggest(
     set: DictionarySet,
     word_list: WordList,
+    easy: bool,
 ) -> Result<Vec<(&'static str, usize, i64)>, std::io::Error> {
     println!("Words remaining: {}", word_list.word_count());
-    let mut words = word_list.get();
-    words.par_sort_by_key(|word| pattern_from_word(*word));
+    let words = word_list.get();
 
-    let grouped = words
+    let remaining = word_list.word_count();
+    if remaining == 1 {
+        return Ok(vec![(words.first().unwrap(), 1, 5)]);
+    }
+
+    let mut candidates = if easy {
+        WordList::new().get()
+    } else {
+        words.clone()
+    };
+    candidates.par_sort_by_key(|word| pattern_from_word(*word));
+
+    let grouped = candidates
         .iter()
         .group_by(|word| pattern_from_word(*word))
         .into_iter()
